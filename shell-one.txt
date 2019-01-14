@@ -1,0 +1,118 @@
+
+python3 token.py zhihu-corpus-one/corpus-one/train.ans zhihu-corpus-one/token/train.token.ans
+python3 token.py zhihu-corpus-one/corpus-one/train.com zhihu-corpus-one/token/train.token.com
+
+python3 token.py zhihu-corpus-one/corpus-one/testset1.ans zhihu-corpus-one/token/testset1.token.ans
+python3 token.py zhihu-corpus-one/corpus-one/testset1.com zhihu-corpus-one/token/testset1.token.com
+
+python3 token.py zhihu-corpus-one/corpus-one/validset1.ans zhihu-corpus-one/token/validset1.token.ans
+python3 token.py zhihu-corpus-one/corpus-one/validset1.com zhihu-corpus-one/token/validset1.token.com
+
+
+#truecaser training
+cd ~/zhihu-corpus-one
+mkdir true
+~/mosesdecoder/scripts/recaser/train-truecaser.perl \
+     --model ~/zhihu-corpus-one/truecase-model.cn.ans --corpus     \
+     ~/zhihu-corpus-one/token/train.token.ans
+
+~/mosesdecoder/scripts/recaser/train-truecaser.perl \
+     --model ~/zhihu-corpus-one/truecase-model.cn.com --corpus     \
+     ~/zhihu-corpus-one/token/train.token.com
+
+#truecaser use
+
+ ~/mosesdecoder/scripts/recaser/truecase.perl \
+   --model ~/zhihu-corpus-one/truecase-model.cn.ans         \
+   < ~/zhihu-corpus-one/token/train.token.ans \
+   > ~/zhihu-corpus-one/true/train.true.ans 
+
+ ~/mosesdecoder/scripts/recaser/truecase.perl \
+   --model ~/zhihu-corpus-one/truecase-model.cn.com         \
+   < ~/zhihu-corpus-one/token/train.token.com \
+   > ~/zhihu-corpus-one/true/train.true.com
+
+# ans 245 com 205
+cd ~
+python3 senten_len.py ~/zhihu-corpus-one/true/train.true.com
+python3 senten_len.py ~/zhihu-corpus-one/true/train.true.ans
+
+cd ~/zhihu-corpus-one 
+
+#clean limit sentence maxlen= 205 input:164762 output:153157
+mkdir clean
+ ~/mosesdecoder/scripts/training/clean-corpus-n.perl \
+    ~/zhihu-corpus-one/true/train.true ans com \
+    ~/zhihu-corpus-one/clean/train.clean 1 205
+
+#language model training
+
+ cd ~/lm
+ ~/mosesdecoder/bin/lmplz -o 3 <~/zhihu-corpus-one/true/train.true.com > zhihu_comment.one.arpa.com
+
+# binarise the *.arpa using KenLM
+
+ ~/mosesdecoder/bin/build_binary \
+   zhihu_comment.one.arpa.com \
+   zhihu_comment.one.blm.com
+
+# check language model
+ echo "你 写 的 答 案 真 好 ， 非 常 赞 同 ！"                       \
+   | ~/mosesdecoder/bin/query zhihu_comment.one.blm.com
+
+# training the translation system
+mkdir ~/one-working
+ cd ~/one-working
+ nohup nice ~/mosesdecoder/scripts/training/train-model.perl -root-dir train \
+ -corpus ~/zhihu-corpus-one/clean/train.clean                             \
+ -f ans -e com -alignment grow-diag-final-and -reordering msd-bidirectional-fe \
+ -lm 0:3:$HOME/lm/zhihu_comment.one.blm.com:8                          \
+ -external-bin-dir ~/mosesdecoder/tools -cores 4 >& training.out &
+
+# Tuning  use dev data
+# token and truecase
+cd ~/zhihu-corpus-one
+ ~/mosesdecoder/scripts/recaser/truecase.perl --model truecase-model.cn.ans \
+   < token/validset1.token.ans > true/validset1.true.ans
+ ~/mosesdecoder/scripts/recaser/truecase.perl --model truecase-model.cn.com \
+   < token/validset1.token.com > true/validset1.true.com
+
+# training and launch the tuning process
+cd ~/one-working
+ nohup nice ~/mosesdecoder/scripts/training/mert-moses.pl \
+  ~/zhihu-corpus-one/true/validset1.true.ans ~/zhihu-corpus-one/true/validset1.true.com \
+  ~/mosesdecoder/bin/moses train/model/moses.ini --mertdir ~/mosesdecoder/bin/ \
+  --decoder-flags="-threads 4"  &> mert.out &
+
+# testing and type the input
+~/mosesdecoder/bin/moses -f ~/one-working/mert-work/moses.ini
+
+
+# test data 
+cd ~/zhihu-corpus-one
+ ~/mosesdecoder/scripts/recaser/truecase.perl --model truecase-model.cn.ans \
+   < token/testset1.token.ans > true/testset1.true.ans
+ ~/mosesdecoder/scripts/recaser/truecase.perl --model truecase-model.cn.com \
+   < token/testset1.token.com > true/testset1.true.com
+
+# filter for this test set
+cd ~/one-working
+ ~/mosesdecoder/scripts/training/filter-model-given-input.pl             \
+   filtered-zhihu-testset1-ans mert-work/moses.ini ~/zhihu-corpus-one/true/testset1.true.ans \
+   -Binarizer ~/mosesdecoder/bin/processPhraseTableMin
+
+# test decoder 
+nohup nice ~/mosesdecoder/bin/moses            \
+   -f ~/one-working/filtered-zhihu-testset1-ans/moses.ini   \
+   < ~/zhihu-corpus-one/true/testset1.true.ans                \
+   > ~/one-working/testset1.translated.com         \
+   2> ~/one-working/zhihu-testet1.out 
+
+ # get bleu 
+ ~/mosesdecoder/scripts/generic/multi-bleu.perl \
+   -lc ~/zhihu-corpus-one/true/testset1.true.com              \
+   < ~/one-working/testset1.translated.com
+
+ ~/mosesdecoder/scripts/generic/multi-bleu.perl \
+   -lc ~/zhihu-corpus-one/true/testset1.true.ans              \
+   < ~/one-working/testset1.translated.com
